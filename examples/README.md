@@ -18,6 +18,21 @@ on by default. Training-time validation exhaustively evaluates ALFWorld's 140
 seen plus 134 unseen tasks and WebShop's 500 evaluation goals in chunks of at
 most 128 environments.
 
+## Rollout performance behavior
+
+The ALFWorld and WebShop launchers automatically compact active trajectories:
+after an environment slot terminates, later generation and environment steps
+exclude that slot while preserving its original task, observation history,
+trajectory ID, and SDAR `turn_index`/step-row identity. The legacy full-batch
+path remains available for environment managers without `step_selected`.
+
+For synchronous FSDP-vLLM rollout workers, one bounded multi-turn collection
+attempt also keeps the rollout weights and KV cache resident across turns.
+Unsupported rollout backends retain their per-generation enter/exit behavior;
+trajectory compaction remains enabled independently. Session cleanup is
+failure-safe, and actor updates reject entering, active, or tainted rollout
+sessions rather than training against uncertain residency state.
+
 ## Runtime paths
 
 ALFWorld launchers default to:

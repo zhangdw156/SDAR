@@ -15,6 +15,7 @@
 The main entry point to run the PPO algorithm
 """
 
+from contextlib import suppress
 import logging
 import os
 import warnings
@@ -135,6 +136,9 @@ class ActorRolloutRefWorker(Worker):
         self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"]
         self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"]
         self._is_ref = self.role in ["ref", "actor_rollout_ref"]
+        self._rollout_session_entering = False
+        self._rollout_session_active = False
+        self._rollout_session_tainted = False
 
         self._is_offload_param = False
         self._is_offload_optimizer = False
@@ -599,6 +603,16 @@ class ActorRolloutRefWorker(Worker):
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_actor(self, data: DataProto):
+        self._sync_rollout_session_taint()
+        if (
+            self._rollout_session_entering
+            or self._rollout_session_active
+            or self._rollout_session_tainted
+        ):
+            raise RuntimeError(
+                "update_actor cannot run while a rollout session is entering, active, or tainted"
+            )
+
         # Support all hardwares
         data = data.to(get_torch_device().current_device())
 
@@ -652,21 +666,136 @@ class ActorRolloutRefWorker(Worker):
             "pad_token_id": self.generation_config.pad_token_id if self.generation_config is not None else self.tokenizer.pad_token_id,
         }
         prompts.meta_info.update(meta_info)
+
+        if self._rollout_session_active:
+            output = self._generate_sequences_impl(prompts)
+            return output.to("cpu")
+
         with self.rollout_sharding_manager:
             log_gpu_memory_usage("After entering rollout sharding manager", logger=logger)
-
-            prompts = self.rollout_sharding_manager.preprocess_data(prompts)
-            output = self.rollout.generate_sequences(prompts=prompts)
-            
-            log_gpu_memory_usage("After rollout generation", logger=logger)
-
-            output = self.rollout_sharding_manager.postprocess_data(output)
+            output = self._generate_sequences_impl(prompts)
 
         output = output.to("cpu")
 
         # clear kv cache
         get_torch_device().empty_cache()
         return output
+
+    def _sync_rollout_session_taint(self):
+        sharding_manager = getattr(self, "rollout_sharding_manager", None)
+        if (
+            sharding_manager is not None
+            and getattr(sharding_manager, "_tainted", False)
+        ):
+            self._rollout_session_tainted = True
+
+    @staticmethod
+    def _record_rollout_cleanup_error(
+        original_error,
+        cleanup_error,
+        action,
+    ):
+        with suppress(BaseException):
+            original_error.rollout_session_cleanup_error = cleanup_error
+        try:
+            note = f"rollout session {action} failed: {cleanup_error!r}"
+        except BaseException:
+            note = f"rollout session {action} failed"
+        if hasattr(original_error, "add_note"):
+            with suppress(BaseException):
+                original_error.add_note(note)
+        try:
+            logger.error(
+                note,
+                exc_info=(
+                    type(cleanup_error),
+                    cleanup_error,
+                    cleanup_error.__traceback__,
+                ),
+            )
+        except Exception:
+            pass
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def begin_rollout_session(self):
+        assert self._is_rollout
+        if not getattr(
+            self.rollout_sharding_manager,
+            "supports_rollout_session",
+            False,
+        ):
+            return
+        self._sync_rollout_session_taint()
+        if self._rollout_session_tainted:
+            raise RuntimeError("rollout session is tainted and cannot be reused")
+        if self._rollout_session_entering or self._rollout_session_active:
+            raise RuntimeError("rollout session is already entering or active")
+
+        self._rollout_session_entering = True
+        try:
+            self.rollout_sharding_manager.__enter__()
+        except BaseException as enter_error:
+            self._rollout_session_entering = False
+            self._rollout_session_active = False
+            self._sync_rollout_session_taint()
+            try:
+                get_torch_device().empty_cache()
+            except BaseException as cache_error:
+                self._rollout_session_tainted = True
+                self._record_rollout_cleanup_error(
+                    enter_error,
+                    cache_error,
+                    "cache cleanup",
+                )
+            raise
+        else:
+            self._rollout_session_active = True
+            self._rollout_session_entering = False
+            self._sync_rollout_session_taint()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def end_rollout_session(self):
+        assert self._is_rollout
+        if not self._rollout_session_active:
+            self._sync_rollout_session_taint()
+            return
+
+        exit_error = None
+        exit_traceback = None
+        try:
+            self.rollout_sharding_manager.__exit__(None, None, None)
+        except BaseException as error:
+            exit_error = error
+            exit_traceback = error.__traceback__
+            self._rollout_session_tainted = True
+        finally:
+            self._rollout_session_active = False
+            self._sync_rollout_session_taint()
+
+        try:
+            get_torch_device().empty_cache()
+        except BaseException as cache_error:
+            self._rollout_session_tainted = True
+            if exit_error is None:
+                exit_error = cache_error
+                exit_traceback = cache_error.__traceback__
+            else:
+                self._record_rollout_cleanup_error(
+                    exit_error,
+                    cache_error,
+                    "cache cleanup",
+                )
+
+        if exit_error is not None:
+            raise exit_error.with_traceback(exit_traceback)
+
+    def _generate_sequences_impl(self, prompts: DataProto):
+        prompts = self.rollout_sharding_manager.preprocess_data(prompts)
+        output = self.rollout.generate_sequences(prompts=prompts)
+
+        log_gpu_memory_usage("After rollout generation", logger=logger)
+
+        return self.rollout_sharding_manager.postprocess_data(output)
 
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -1454,6 +1583,18 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         raise NotImplementedError("AsyncActorRolloutRefWorker does not support generate_sequences")
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def begin_rollout_session(self):
+        raise NotImplementedError(
+            "AsyncActorRolloutRefWorker does not support rollout sessions"
+        )
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def end_rollout_session(self):
+        raise NotImplementedError(
+            "AsyncActorRolloutRefWorker does not support rollout sessions"
+        )
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     def execute_method(self, method: Union[str, bytes], *args, **kwargs):
