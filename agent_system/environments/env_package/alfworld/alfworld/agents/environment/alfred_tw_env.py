@@ -9,8 +9,8 @@ import textworld
 import textworld.agents
 import textworld.gym
 
-from alfworld.agents.utils.misc import Demangler, add_task_to_grammar
-from alfworld.agents.expert import HandCodedTWAgent, HandCodedAgentTimeout
+from alfworld.agents.utils.misc import Demangler
+from alfworld.agents.expert import HandCodedTWAgent
 
 
 TASK_TYPES = {1: "pick_and_place_simple",
@@ -72,17 +72,20 @@ class AlfredExpert(textworld.core.Wrapper):
     def _gather_infos(self):
         # Compute expert plan.
         if self.expert_type == AlfredExpertType.HANDCODED:
-            self.state["extra.expert_plan"] = ["look"]
+            self.state["extra.expert_plan"] = []
             try:
                 # initialization
                 if not self.prev_command:
                     self._handcoded_expert.observe(self.state["feedback"])
+                    self.state["extra.expert_plan"] = ["look"]
                 else:
                     handcoded_expert_next_action = self._handcoded_expert.act(self.state, 0, self.state["won"], self.prev_command)
                     if handcoded_expert_next_action in self.state["admissible_commands"]:
                         self.state["extra.expert_plan"] = [handcoded_expert_next_action]
-            except HandCodedAgentTimeout:
-                raise Exception("Timeout")
+            except Exception:
+                # Expert output is optional and must never
+                # terminate the environment rollout.
+                self.state["extra.expert_plan"] = []
         elif self.expert_type == AlfredExpertType.PLANNER:
             self.state["extra.expert_plan"] = self.state["policy_commands"]
         else:
@@ -103,8 +106,12 @@ class AlfredExpert(textworld.core.Wrapper):
 
     def reset(self):
         self.state = super().reset()
-        self._handcoded_expert.reset(self.gamefile)
         self.prev_command = ""
+        try:
+            self._handcoded_expert.reset(self.gamefile)
+        except Exception:
+            self.state["extra.expert_plan"] = []
+            return self.state
         self._gather_infos()
         return self.state
 
@@ -124,8 +131,20 @@ class AlfredTWEnv(object):
                    " the script `alfworld-generate`. Ignoring it and loading games as they are.")
             print(colored(msg, "yellow"))
 
-        self.collect_game_files()
-        self.use_expert = False
+        configured_game_files = config.get("dataset", {}).get("game_files")
+        if configured_game_files is None:
+            self.collect_game_files()
+        else:
+            self.game_files = [
+                os.path.expandvars(os.path.expanduser(game_file))
+                for game_file in configured_game_files
+            ]
+            self.num_games = len(self.game_files)
+            print(
+                f"Loaded {self.num_games} explicit games "
+                f"for split={self.train_eval}"
+            )
+        self.use_expert = bool(config["env"].get("use_expert", False))
         print(f"use_expert = {self.use_expert}")
     def collect_game_files(self, verbose=False):
         def log(info):

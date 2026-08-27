@@ -19,12 +19,14 @@ from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
+from omegaconf import OmegaConf
 from transformers import PreTrainedTokenizer
 import uuid
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
 from typing import List, Dict
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
+from verl.trainer.ppo.trajectory_grpo import validate_trajectory_grpo_config
 
 
 def _gamefiles_from_infos(infos: List[Dict]) -> np.ndarray:
@@ -45,6 +47,19 @@ class TrajectoryCollector:
         self.config = config
         self.tokenizer = tokenizer
         self.processor = processor
+        trajectory_config = config.algorithm.get("trajectory_grpo", {})
+        validate_trajectory_grpo_config(
+            {
+                "trajectory_grpo": (
+                    OmegaConf.to_container(
+                        trajectory_config,
+                        resolve=True,
+                    )
+                    if OmegaConf.is_config(trajectory_config)
+                    else dict(trajectory_config or {})
+                )
+            }
+        )
 
     def preprocess_single_sample(
         self,
@@ -376,6 +391,11 @@ class TrajectoryCollector:
 
             batch.non_tensor_batch['uid'] = uid_batch
             batch.non_tensor_batch['traj_uid'] = traj_uid
+            batch.non_tensor_batch['turn_index'] = np.full(
+                batch_size,
+                _step,
+                dtype=np.int64,
+            )
 
             batch = batch.union(batch_output)
             

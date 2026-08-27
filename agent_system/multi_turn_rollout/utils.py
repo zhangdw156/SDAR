@@ -20,6 +20,17 @@ from typing import List, Tuple, Dict
 import math
 from PIL import Image
 from verl import DataProto
+from verl.trainer.ppo.trajectory_grpo import validate_trajectory_grpo_config
+
+
+def _validate_trajectory_grpo_runtime(config) -> None:
+    validate_trajectory_grpo_config(
+        {
+            "trajectory_grpo": dict(
+                config.algorithm.get("trajectory_grpo", {})
+            )
+        }
+    )
 
 def to_list_of_dict(batch: DataProto) -> list[dict]:
     tensors = batch.batch
@@ -84,6 +95,7 @@ def process_image(image, max_pixels: int = 2048 * 2048, min_pixels: int = 256 * 
 
 
 def adjust_batch(config, data: DataProto, mode="copy") -> DataProto:
+    _validate_trajectory_grpo_runtime(config)
     world_size = config.trainer.n_gpus_per_node * config.trainer.nnodes
     size_divisor_rollout = config.actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu * world_size
     if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
@@ -182,4 +194,3 @@ def filter_group_data(batch_list : List[Dict],
     tool_callings = tool_callings[keep_indices]
 
     return batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
-

@@ -23,8 +23,8 @@ from verl.trainer.ppo.ray_trainer import (
     _timer,
     apply_invalid_action_penalty,
     apply_kl_penalty,
-    compute_advantage,
     compute_response_mask,
+    compute_step_row_advantage,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.trainer.ppo.rlsd_utils import SkillProvider
@@ -197,23 +197,7 @@ class SkillSDRayTrainer(RLSDRayTrainer):
                         else:
                             batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
 
-                        norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-                        batch = compute_advantage(
-                            batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,
-                            gamma=self.config.algorithm.gamma,
-                            lam=self.config.algorithm.lam,
-                            num_repeat=self.config.actor_rollout_ref.rollout.n,
-                            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                            multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
-                            use_pf_ppo=self.config.algorithm.use_pf_ppo,
-                            pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
-                            pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
-                            step_advantage_w=self.config.algorithm.gigpo.step_advantage_w,
-                            gigpo_mode=self.config.algorithm.gigpo.mode,
-                            gigpo_enable_similarity=self.config.algorithm.gigpo.enable_similarity,
-                            gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
-                        )
+                        batch = compute_step_row_advantage(batch, self.config)
 
                         # ---- SkillSD: Do NOT replace advantages ----
                         # Advantages stay as standard GRPO sequence-level advantages.

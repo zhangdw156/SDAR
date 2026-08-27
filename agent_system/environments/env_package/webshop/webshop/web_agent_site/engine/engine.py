@@ -1,27 +1,21 @@
 """
 """
-import os
-import re
 import json
+import os
 import random
-from collections import defaultdict
+import re
 from ast import literal_eval
+from collections import defaultdict
 from decimal import Decimal
 
 import cleantext
-from tqdm import tqdm
-from rank_bm25 import BM25Okapi
 from flask import render_template_string
-from rich import print
 from pyserini.search.lucene import LuceneSearcher
+from rank_bm25 import BM25Okapi
+from rich import print
+from tqdm import tqdm
 
-from web_agent_site.utils import (
-    BASE_DIR,
-    DEFAULT_FILE_PATH,
-    DEFAULT_REVIEW_PATH,
-    DEFAULT_ATTR_PATH,
-    HUMAN_ATTR_PATH
-)
+from web_agent_site.utils import BASE_DIR, DEFAULT_ATTR_PATH, DEFAULT_FILE_PATH, DEFAULT_REVIEW_PATH, HUMAN_ATTR_PATH
 
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 
@@ -177,7 +171,8 @@ def get_product_per_page(top_n_products, page):
     return top_n_products[(page - 1) * PRODUCT_WINDOW:page * PRODUCT_WINDOW]
 
 
-def generate_product_prices(all_products):
+def generate_product_prices(all_products, rng=None):
+    rng = random if rng is None else rng
     product_prices = dict()
     for product in all_products:
         asin = product['asin']
@@ -187,7 +182,7 @@ def generate_product_prices(all_products):
         elif len(pricing) == 1:
             price = pricing[0]
         else:
-            price = random.uniform(*pricing[:2])
+            price = rng.uniform(*pricing[:2])
         product_prices[asin] = price
     return product_prices
 
@@ -227,7 +222,13 @@ def clean_product_keys(products):
     return products
 
 
-def load_products(filepath, attrpath, num_products=None, human_goals=True):
+def load_products(
+    filepath,
+    attrpath,
+    num_products=None,
+    human_goals=True,
+    rng=None,
+):
     # TODO: move to preprocessing step -> enforce single source of truth
     with open(filepath) as f:
         products = json.load(f)
@@ -358,5 +359,5 @@ def load_products(filepath, attrpath, num_products=None, human_goals=True):
             attribute_to_asins[a].add(p['asin'])
 
     product_item_dict = {p['asin']: p for p in all_products}
-    product_prices = generate_product_prices(all_products)
+    product_prices = generate_product_prices(all_products, rng=rng)
     return all_products, product_item_dict, product_prices, attribute_to_asins

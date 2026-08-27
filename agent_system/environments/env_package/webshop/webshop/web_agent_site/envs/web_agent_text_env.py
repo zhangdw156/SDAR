@@ -1,34 +1,31 @@
-import gym
 import json
 import random
 import string
 import time
-import torch
+from collections import defaultdict
 
+import gym
 import numpy as np
-
+import torch
 from bs4 import BeautifulSoup
 from bs4.element import Comment
-from collections import defaultdict
 from flask import Flask
+
 from web_agent_site.engine.engine import (
-    load_products,
-    init_search_engine,
+    ACTION_TO_TEMPLATE,
+    BACK_TO_SEARCH,
+    END_BUTTON,
+    NEXT_PAGE,
+    PREV_PAGE,
+    get_product_per_page,
     get_top_n_product_from_keywords,
+    init_search_engine,
+    load_products,
     map_action_to_html,
     parse_action,
-    get_product_per_page,
-    ACTION_TO_TEMPLATE,
-    END_BUTTON, NEXT_PAGE, PREV_PAGE, BACK_TO_SEARCH,
 )
-from web_agent_site.engine.goal import get_reward, get_goals
-from web_agent_site.utils import (
-    DEFAULT_FILE_PATH,
-    DEFAULT_ATTR_PATH,
-    FEAT_CONV,
-    FEAT_IDS,
-    random_idx
-)
+from web_agent_site.engine.goal import get_goals, get_reward
+from web_agent_site.utils import DEFAULT_ATTR_PATH, DEFAULT_FILE_PATH, FEAT_CONV, FEAT_IDS, random_idx
 
 app = Flask(__name__)
 class WebAgentTextEnv(gym.Env):
@@ -55,11 +52,12 @@ class WebAgentTextEnv(gym.Env):
         session_prefix
         show_attrs
         """
-        super(WebAgentTextEnv, self).__init__()
+        super().__init__()
         self.observation_mode = observation_mode
         self.kwargs = kwargs
 
         self._seed = kwargs.get('seed', 42)
+        self._goal_seed = kwargs.get('goal_seed', self._seed)
 
         random.seed(self._seed)
         np.random.seed(self._seed)
@@ -69,6 +67,7 @@ class WebAgentTextEnv(gym.Env):
         self.attr_path = attr_path
 
         self.base_url = 'http://127.0.0.1:3000'
+        self._owns_server = server is None
         self.server = SimServer(
             self._seed,
             self.base_url,
@@ -79,7 +78,11 @@ class WebAgentTextEnv(gym.Env):
             self.kwargs.get('num_products'),
             self.kwargs.get('human_goals'),
             self.kwargs.get('show_attrs', False),
+            goal_seed=self._goal_seed,
         ) if server is None else server
+        random.seed(self._seed)
+        np.random.seed(self._seed)
+        torch.manual_seed(self._seed)
         self.browser = SimBrowser(self.server)
 
         self.session = self.kwargs.get('session')
@@ -231,7 +234,8 @@ class WebAgentTextEnv(gym.Env):
             # Otherwise, return an observation with tags mapped to specific, unique separators
             observation = ''
             for t in visible_texts:
-                if t == '\n': continue
+                if t == '\n':
+                    continue
                 if t.parent.name == 'button':  # button
                     processed_t = f'[button] {t} [button_]'
                 elif t.parent.name == 'label':  # options
@@ -276,7 +280,12 @@ class WebAgentTextEnv(gym.Env):
         pass
 
     def close(self):
-        pass
+        server = getattr(self, 'server', None)
+        if (
+            server is not None
+            and getattr(self, '_owns_server', True)
+        ):
+            server.close()
     
 
 def tag_visible(element):
@@ -299,6 +308,7 @@ class SimServer:
         num_products=None,
         human_goals=0,
         show_attrs=False,
+        goal_seed=None,
     ):
         """
         Constructor for simulated server serving WebShop application
@@ -309,17 +319,31 @@ class SimServer:
         num_products (`int`) -- Number of products to search across
         human_goals (`bool`) -- If true, load human goals; otherwise, load synthetic goals
         """
+        canonical_goal_seed = seed if goal_seed is None else goal_seed
+        construction_rng = random.Random(canonical_goal_seed)
+        shuffle_rng = random.Random(canonical_goal_seed)
+
         # Load all products, goals, and search engine
         self.base_url = base_url
         self.all_products, self.product_item_dict, self.product_prices, _ = \
-            load_products(filepath=file_path, attrpath=attr_path, num_products=num_products, human_goals=human_goals)
+            load_products(
+                filepath=file_path,
+                attrpath=attr_path,
+                num_products=num_products,
+                human_goals=human_goals,
+                rng=construction_rng,
+            )
         self.search_engine = init_search_engine(num_products=num_products)
-        self.goals = get_goals(self.all_products, self.product_prices, human_goals)
+        self.goals = get_goals(
+            self.all_products,
+            self.product_prices,
+            human_goals,
+            rng=construction_rng,
+        )
         self.show_attrs = show_attrs
 
         # Fix outcome for random shuffling of goals
-        random.seed(seed)
-        random.shuffle(self.goals)
+        shuffle_rng.shuffle(self.goals)
 
         # Apply `filter_goals` parameter if exists to select speific goal(s)
         if filter_goals is not None:
@@ -348,6 +372,19 @@ class SimServer:
         self.render_time = 0
         self.sample_time = 0
         self.assigned_instruction_text = None  # TODO: very hacky, should remove
+
+    def close(self):
+        if getattr(self, '_closed', False):
+            return
+
+        search_engine = getattr(self, 'search_engine', None)
+        self.search_engine = None
+        try:
+            if search_engine is not None:
+                search_engine.close()
+        finally:
+            self.user_sessions.clear()
+            self._closed = True
         
     @app.route('/', methods=['GET', 'POST'])
     def index(self, session_id, **kwargs):

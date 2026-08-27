@@ -14,18 +14,57 @@
 # limitations under the License.
 
 import os
-import yaml
+
 import gymnasium as gym
-from gymnasium import spaces
-import numpy as np
+import ray
 import torch
 import torchvision.transforms as T
-import ray
+import yaml
 
 from agent_system.environments.env_package.alfworld.alfworld.agents.environment import get_environment
+from agent_system.environments.fairness import (
+    alfworld_fairness_split,
+    alfworld_gamefiles,
+    alfworld_worker_gamefiles,
+)
 
 ALF_ACTION_LIST=["pass", "goto", "pick", "put", "open", "close", "toggle", "heat", "clean", "cool", "slice", "inventory", "examine", "look"]
 # ALF_ITEM_LIST =
+
+
+_SEQUENCE_INFO_KEYS = {
+    "admissible_commands",
+    "extra.expert_plan",
+    "facts",
+    "policy_commands",
+}
+
+
+def _flatten_single_env_info(info):
+    flattened = {}
+    for key, value in info.items():
+        if value is None:
+            flattened[key] = None
+            continue
+        if isinstance(value, (list, tuple)):
+            if not value:
+                flattened[key] = value
+                continue
+            first = value[0]
+            if key not in _SEQUENCE_INFO_KEYS or isinstance(
+                first,
+                (list, tuple, dict),
+            ):
+                flattened[key] = first
+            else:
+                flattened[key] = value
+            continue
+        if isinstance(value, torch.Tensor) and value.ndim > 0 and len(value) == 1:
+            flattened[key] = value[0]
+            continue
+        flattened[key] = value
+    return flattened
+
 
 def load_config_file(path):
     assert os.path.exists(path), "Invalid config file"
@@ -58,7 +97,10 @@ class AlfworldWorker:
     Each actor holds one environment instance.
     """
     
-    def __init__(self, config, seed, base_env):
+    def __init__(self, config, seed, base_env, game_file=None):
+        if game_file is not None:
+            base_env.game_files = [game_file]
+            base_env.num_games = 1
         self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
         self.env.seed(seed)
     
@@ -83,8 +125,9 @@ class AlfworldWorker:
         return image
 
 class AlfworldEnvs(gym.Env):
-    def __init__(self, alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs={}):
+    def __init__(self, alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs=None):
         super().__init__()
+        env_kwargs = {} if env_kwargs is None else env_kwargs
         
         # Initialize Ray if not already initialized
         if not ray.is_initialized():
@@ -92,17 +135,63 @@ class AlfworldEnvs(gym.Env):
             
         eval_dataset = env_kwargs.get('eval_dataset', 'eval_in_distribution')
         config = load_config_file(alf_config_path)
+        config['env']['use_expert'] = bool(
+            env_kwargs.get(
+                'use_expert',
+                config['env'].get('use_expert', False),
+            )
+        )
         env_type = config['env']['type']
-        base_env = get_environment(env_type)(config, train_eval='train' if is_train else eval_dataset)
+        fairness_enabled = bool(env_kwargs.get('fairness', True))
+        fairness_split = None
+        canonical_game_files = None
+        if fairness_enabled:
+            configured_game_files = env_kwargs.get(
+                'fairness_game_files',
+            )
+            fairness_split = alfworld_fairness_split(
+                is_train=is_train,
+                eval_dataset=eval_dataset,
+                requested_split=env_kwargs.get('fairness_split'),
+            )
+            canonical_game_files = [
+                os.path.expanduser(os.path.expandvars(path))
+                for path in (
+                    configured_game_files
+                    if configured_game_files is not None
+                    else alfworld_gamefiles(fairness_split)
+                )
+            ]
+            config['dataset']['game_files'] = canonical_game_files
+        base_env = get_environment(env_type)(
+            config,
+            train_eval='train' if is_train else eval_dataset,
+        )
+        if canonical_game_files is not None:
+            base_env.game_files = canonical_game_files
+            base_env.num_games = len(canonical_game_files)
         self.multi_modal = (env_type == 'AlfredThorEnv')
         self.num_processes = env_num * group_n
         self.group_n = group_n
+        if canonical_game_files is None:
+            worker_game_files = [None] * self.num_processes
+        else:
+            worker_game_files = alfworld_worker_gamefiles(
+                fixed_assignment=not is_train,
+                canonical_gamefiles=canonical_game_files,
+                num_processes=self.num_processes,
+            )
 
         # Create Ray remote actors instead of processes
         env_worker = ray.remote(**resources_per_worker)(AlfworldWorker)
         self.workers = []
-        for i in range(self.num_processes):
-            worker = env_worker.remote(config, seed + (i // self.group_n), base_env)
+        for i, game_file in enumerate(worker_game_files):
+            worker = env_worker.remote(
+                config,
+                seed + (i // self.group_n),
+                base_env,
+                game_file,
+            )
             self.workers.append(worker)
 
         self.prev_admissible_commands = [None for _ in range(self.num_processes)]
@@ -110,12 +199,18 @@ class AlfworldEnvs(gym.Env):
     def step(self, actions):
         assert len(actions) == self.num_processes, \
             "The num of actions must be equal to the num of processes"
+        return self.step_selected(actions, list(range(self.num_processes)))
 
-        # Send step commands to all workers
-        futures = []
-        for i, worker in enumerate(self.workers):
-            future = worker.step.remote(actions[i])
-            futures.append(future)
+    def step_selected(self, actions, indices):
+        assert len(actions) == len(indices), \
+            "The num of actions must be equal to the num of selected processes"
+        assert all(0 <= index < self.num_processes for index in indices), \
+            "Selected process index is out of range"
+
+        futures = [
+            self.workers[index].step.remote(action)
+            for action, index in zip(actions, indices)
+        ]
 
         # Collect results
         text_obs_list = []
@@ -125,19 +220,18 @@ class AlfworldEnvs(gym.Env):
         info_list = []
 
         results = ray.get(futures)
-        for i, (obs, scores, dones, info) in enumerate(results):
-            for k in info.keys():
-                info[k] = info[k][0]
+        for index, (obs, scores, dones, info) in zip(indices, results):
+            info = _flatten_single_env_info(info)
 
             text_obs_list.append(obs[0])
             dones_list.append(dones[0])
             info_list.append(info)
 
-            self.prev_admissible_commands[i] = info['admissible_commands']
+            self.prev_admissible_commands[index] = info['admissible_commands']
             rewards_list.append(compute_reward(info, self.multi_modal))
 
         if self.multi_modal:
-            image_obs_list = self.getobs()
+            image_obs_list = self.getobs_selected(indices)
         else:
             image_obs_list = None
 
@@ -160,8 +254,7 @@ class AlfworldEnvs(gym.Env):
         # Collect results
         results = ray.get(futures)
         for i, (obs, info) in enumerate(results):
-            for k in info.keys():
-                info[k] = info[k][0] 
+            info = _flatten_single_env_info(info)
             text_obs_list.append(obs[0])
             self.prev_admissible_commands[i] = info['admissible_commands']
             info_list.append(info)
@@ -186,6 +279,10 @@ class AlfworldEnvs(gym.Env):
         images = ray.get(futures)
         return images
 
+    def getobs_selected(self, indices):
+        futures = [self.workers[index].getobs.remote() for index in indices]
+        return ray.get(futures)
+
     @property
     def get_admissible_commands(self):
         """
@@ -202,5 +299,5 @@ class AlfworldEnvs(gym.Env):
         for worker in self.workers:
             ray.kill(worker)
 
-def build_alfworld_envs(alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs={}):
+def build_alfworld_envs(alf_config_path, seed, env_num, group_n, resources_per_worker, is_train=True, env_kwargs=None):
     return AlfworldEnvs(alf_config_path, seed, env_num, group_n, resources_per_worker, is_train, env_kwargs)

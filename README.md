@@ -78,11 +78,8 @@ pip3 install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 pip install -e .
 ```
 
-Log in to Weights & Biases if you use WandB logging (scripts pass `trainer.logger=['console','wandb']` in many cases):
-
-```bash
-export WANDB_API_KEY=your_key_here
-```
+The ICLR experiment launchers log to SwanLab through
+`trainer.logger=['console','swanlab']`.
 
 ### Install Supported Environments
 
@@ -124,71 +121,19 @@ pip3 install vllm==0.8.2
 ```
 The warnings can be safely ignored.
 
-#### 3. Search
-```bash
-cd ./agent_system/environments/env_package/search/third_party
-pip install -e .
-pip install gym==0.26.2
-```
-
-Prepare dataset (data will be saved at `~/data/searchR1_processed_direct`):
-```bash
-cd repo_root/
-python examples/data_preprocess/preprocess_search_r1_dataset.py
-```
-
-
-Since faiss-gpu is not available via pip, we setup a separate conda environment for the local retrieval server. Running this server will use around 6GB of GPU memory per GPU, so make sure to account for this in your training run configuration. Build Retriever environments:
-```bash
-# Create and activate the retriever environment with Python 3.10
-conda create -n retriever python=3.10 -y
-conda activate retriever
-
-# Install PyTorch (with GPU support) and related libraries
-conda install numpy==1.26.4 # needed to stop incompatible version of numpy from being installed via pip
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-
-# Install other Python packages
-pip install transformers datasets pyserini huggingface_hub
-
-# Install the GPU version of faiss
-conda install faiss-gpu==1.8.0 -c pytorch -c nvidia -y
-
-# Install the API service framework
-pip install uvicorn fastapi
-```
-
-Download the index:
-```bash
-conda activate retriever
-
-local_dir=~/data/searchR1
-python examples/search/searchr1_download.py --local_dir $local_dir
-cat $local_dir/part_* > $local_dir/e5_Flat.index
-gzip -d $local_dir/wiki-18.jsonl.gz
-```
-
-Start the local flat e5 retrieval server: 
-```bash
-conda activate retriever
-
-# redirect the output to a file to avoid cluttering the terminal
-# we have observed outputting to the terminal causing spikes in server response times
-bash examples/search/retriever/retrieval_launch.sh > retrieval_server.log 
-```
-
-
-
 ### Training
 
-All scripts live under `examples/` and assume the repo root as working directory. You can run e.g.:
+The `exp/iclr` branch exposes six standalone, paper-facing launchers:
 
 ```bash
-bash examples/sdar_trainer/run_alfworld_3b.sh
-bash examples/sdar_trainer/run_search_3b.sh
-bash examples/sdar_trainer/run_webshop_3b.sh
+bash examples/sdar_trainer_1.5b/run_alfworld.sh
+bash examples/sdar_trainer_3b/run_webshop.sh
+bash examples/sdar_trainer_7b/run_alfworld.sh
 ```
-Our reproduced codes for GRPO, Skill-GRPO, OPSD, GRPO+OPSD, Skill-SD, and RLSD are also provided in `examples/`.
+
+The matrix covers Qwen2.5 1.5B, 3B, and 7B on ALFWorld and WebShop.
+All launchers use the canonical fairness protocol and the shared ICLR training
+contract documented in `examples/README.md`.
 ### Merge checkpoints
 
 See `scripts/model_merger.py` for FSDP/Megatron merge examples using paths under `./checkpoints/...`.
