@@ -1,20 +1,13 @@
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+
 REPO_ROOT = Path(__file__).parents[2]
-WEBSHOP_BOOTSTRAP = REPO_ROOT / "scripts/bootstrap_webshop_data.sh"
 SIZES = ("1.5b", "3b", "7b")
 ENVIRONMENTS = ("alfworld", "webshop")
-WEBSHOP_RESOURCES = (
-    Path("data/items_shuffle_1000.json"),
-    Path("data/items_ins_v2_1000.json"),
-    Path("data/items_human_ins.json"),
-    Path("search_engine/indexes"),
-)
 
 
 def _launcher(size: str, environment: str) -> Path:
@@ -33,51 +26,6 @@ def _dry_run(launcher: Path, *overrides: str) -> list[str]:
         text=True,
     )
     return completed.stdout.splitlines()
-
-
-def _prepare_webshop_resources(shared_root: Path) -> None:
-    for resource in WEBSHOP_RESOURCES:
-        source = shared_root / resource
-        if resource == Path("search_engine/indexes"):
-            source.mkdir(parents=True)
-            (source / "segments_1").write_text("ready", encoding="utf-8")
-        else:
-            source.parent.mkdir(parents=True, exist_ok=True)
-            source.write_text(resource.name, encoding="utf-8")
-
-
-def _run_webshop_launcher(
-    size: str,
-    repo_root: Path,
-    shared_root: Path,
-    *,
-    dry_run: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    python_bin = shutil.which("true")
-    if python_bin is None:
-        raise RuntimeError("The launcher test requires the standard 'true' command")
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "PYTHON_BIN": python_bin,
-            "REPO_ROOT": str(REPO_ROOT),
-            "WEBSHOP_SHARED_ROOT": str(shared_root),
-            "WEBSHOP_LOCAL_ROOT": str(
-                repo_root
-                / "agent_system/environments/env_package/webshop/webshop"
-            ),
-        }
-    )
-    if dry_run:
-        environment["LAUNCHER_DRY_RUN"] = "true"
-    return subprocess.run(
-        [str(_launcher(size, "webshop"))],
-        cwd=REPO_ROOT,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
 
 
 def test_examples_surface_is_paper_only():
@@ -183,168 +131,7 @@ def test_webshop_assumes_an_active_environment(size: str):
     assert 'PYTHON_BIN="${PYTHON_BIN:-python3}"' in text
     assert "conda" not in text
     assert "mamba" not in text
-    assert 'bash "${REPO_ROOT}/scripts/bootstrap_webshop_data.sh"' in text
-
-
-@pytest.mark.parametrize("size", SIZES)
-def test_webshop_runtime_links_missing_resources(size: str, tmp_path: Path):
-    repo_root = tmp_path / "clone"
-    shared_root = tmp_path / "shared"
-    repo_root.mkdir()
-    _prepare_webshop_resources(shared_root)
-
-    completed = _run_webshop_launcher(size, repo_root, shared_root)
-
-    assert completed.returncode == 0, completed.stderr
-    local_root = (
-        repo_root
-        / "agent_system/environments/env_package/webshop/webshop"
-    )
-    for resource in WEBSHOP_RESOURCES:
-        target = local_root / resource
-        assert target.is_symlink()
-        assert target.resolve() == (shared_root / resource).resolve()
-
-
-@pytest.mark.parametrize("size", SIZES)
-def test_webshop_runtime_linking_is_idempotent(size: str, tmp_path: Path):
-    repo_root = tmp_path / "clone"
-    shared_root = tmp_path / "shared"
-    repo_root.mkdir()
-    _prepare_webshop_resources(shared_root)
-
-    first = _run_webshop_launcher(size, repo_root, shared_root)
-    assert first.returncode == 0, first.stderr
-    local_root = (
-        repo_root
-        / "agent_system/environments/env_package/webshop/webshop"
-    )
-    first_inodes = {
-        resource: (local_root / resource).lstat().st_ino
-        for resource in WEBSHOP_RESOURCES
-    }
-    second = _run_webshop_launcher(size, repo_root, shared_root)
-
-    assert second.returncode == 0, second.stderr
-    assert first_inodes == {
-        resource: (local_root / resource).lstat().st_ino
-        for resource in WEBSHOP_RESOURCES
-    }
-
-
-@pytest.mark.parametrize("size", SIZES)
-def test_webshop_runtime_fails_before_linking_when_shared_source_is_missing(
-    size: str,
-    tmp_path: Path,
-):
-    repo_root = tmp_path / "clone"
-    shared_root = tmp_path / "shared"
-    repo_root.mkdir()
-    _prepare_webshop_resources(shared_root)
-    missing_resource = WEBSHOP_RESOURCES[-1]
-    shutil.rmtree(shared_root / missing_resource)
-
-    completed = _run_webshop_launcher(size, repo_root, shared_root)
-
-    assert completed.returncode != 0
-    assert str(shared_root / missing_resource) in completed.stderr
-    assert "Run the shared WebShop setup first" in completed.stderr
-    local_root = (
-        repo_root
-        / "agent_system/environments/env_package/webshop/webshop"
-    )
-    assert not any((local_root / resource).exists() for resource in WEBSHOP_RESOURCES)
-
-
-@pytest.mark.parametrize("size", SIZES)
-def test_webshop_dry_run_does_not_create_runtime_links(size: str, tmp_path: Path):
-    repo_root = tmp_path / "clone"
-    shared_root = tmp_path / "missing-shared"
-    repo_root.mkdir()
-
-    completed = _run_webshop_launcher(
-        size,
-        repo_root,
-        shared_root,
-        dry_run=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert not (
-        repo_root
-        / "agent_system/environments/env_package/webshop/webshop"
-    ).exists()
-
-
-def test_webshop_bootstrap_serializes_concurrent_launchers(tmp_path: Path):
-    shared_root = tmp_path / "shared"
-    local_root = tmp_path / "clone/webshop"
-    _prepare_webshop_resources(shared_root)
-    environment = {
-        **os.environ,
-        "WEBSHOP_SHARED_ROOT": str(shared_root),
-        "WEBSHOP_LOCAL_ROOT": str(local_root),
-    }
-
-    processes = [
-        subprocess.Popen(
-            ["bash", str(WEBSHOP_BOOTSTRAP)],
-            cwd=REPO_ROOT,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(16)
-    ]
-    results = [process.communicate(timeout=20) + (process.returncode,) for process in processes]
-
-    assert all(returncode == 0 for _, _, returncode in results), results
-    for resource in WEBSHOP_RESOURCES:
-        target = local_root / resource
-        assert target.is_symlink()
-        assert target.resolve() == (shared_root / resource).resolve()
-
-
-def test_webshop_bootstrap_rolls_back_links_after_failure(tmp_path: Path):
-    shared_root = tmp_path / "shared"
-    local_root = tmp_path / "clone/webshop"
-    bin_dir = tmp_path / "bin"
-    counter = tmp_path / "ln-count"
-    _prepare_webshop_resources(shared_root)
-    bin_dir.mkdir()
-    ln_stub = bin_dir / "ln"
-    real_ln = shutil.which("ln")
-    assert real_ln is not None
-    ln_stub.write_text(
-        "#!/usr/bin/env bash\n"
-        'count="$(cat "${LN_COUNTER}" 2>/dev/null || printf 0)"\n'
-        "count=$((count + 1))\n"
-        'printf "%s\\n" "${count}" > "${LN_COUNTER}"\n'
-        'if (( count == 2 )); then exit 42; fi\n'
-        'exec "${REAL_LN}" "$@"\n',
-        encoding="utf-8",
-    )
-    ln_stub.chmod(0o755)
-
-    completed = subprocess.run(
-        ["bash", str(WEBSHOP_BOOTSTRAP)],
-        cwd=REPO_ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "LN_COUNTER": str(counter),
-            "REAL_LN": real_ln,
-            "WEBSHOP_SHARED_ROOT": str(shared_root),
-            "WEBSHOP_LOCAL_ROOT": str(local_root),
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 42
-    assert not any((local_root / resource).is_symlink() for resource in WEBSHOP_RESOURCES)
+    assert "WEBSHOP_RUNTIME_ROOT" not in text
 
 
 def test_trainer_wiring_consumes_all_canonical_chunks():

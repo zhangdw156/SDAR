@@ -43,15 +43,8 @@ ALFWorld launchers default to:
 
 The shim is added to `LD_PRELOAD` only when it exists. WebShop launchers default
 to `PYTHON_BIN=python3`, do not activate Conda/Mamba, and assume the caller has
-already activated a runnable environment. On a clean H20 clone, each WebShop
-launcher reuses the prepared resources under
-`WEBSHOP_SHARED_ROOT=/data/zhangdw12/work/verl-agent/agent_system/environments/env_package/webshop/webshop`
-by creating missing repository-local symbolic links for the three JSON data
-files and `search_engine/indexes`. Existing local resources are left unchanged.
-Override `WEBSHOP_SHARED_ROOT` or `WEBSHOP_LOCAL_ROOT` when either location
-differs. Bootstrap is serialized across concurrent launchers, rolls back links
-created by a failed attempt, and verifies non-empty data files plus a usable
-Lucene index before data preparation or training.
+already activated a runnable environment. WebShop data and indexes remain at
+the repository-relative paths used by the bundled environment package.
 
 Canonical fairness manifests are downloaded on first use to
 `${VERL_AGENT_FAIRNESS_CACHE:-${HOME}/.cache/verl-agent/fairness}`. Per-benchmark
@@ -59,5 +52,5 @@ overrides remain available through `ALFWORLD_FAIRNESS_DIR` and
 `WEBSHOP_FAIRNESS_DIR`.
 
 Set `LAUNCHER_DRY_RUN=true` to print the resolved trainer module and Hydra
-overrides without creating WebShop links, preparing data, or starting training.
-Additional CLI Hydra overrides are appended last and therefore take precedence.
+overrides without preparing data or starting training. Additional CLI Hydra
+overrides are appended last and therefore take precedence.
