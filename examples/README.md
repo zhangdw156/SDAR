@@ -49,8 +49,9 @@ launcher reuses the prepared resources under
 by creating missing repository-local symbolic links for the three JSON data
 files and `search_engine/indexes`. Existing local resources are left unchanged.
 Override `WEBSHOP_SHARED_ROOT` or `WEBSHOP_LOCAL_ROOT` when either location
-differs. Missing shared resources fail before data preparation or training with
-a WebShop setup hint.
+differs. Bootstrap is serialized across concurrent launchers, rolls back links
+created by a failed attempt, and verifies non-empty data files plus a usable
+Lucene index before data preparation or training.
 
 Canonical fairness manifests are downloaded on first use to
 `${VERL_AGENT_FAIRNESS_CACHE:-${HOME}/.cache/verl-agent/fairness}`. Per-benchmark
