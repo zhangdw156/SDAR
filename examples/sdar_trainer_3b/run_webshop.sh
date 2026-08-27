@@ -11,6 +11,8 @@ export MODEL_PATH="${MODEL_PATH:-${MODEL_ROOT}/Qwen2.5-3B-Instruct}"
 export TRAIN_FILE="${TRAIN_FILE:-${VERL_AGENT_DATA_ROOT}/text/train.parquet}"
 export VAL_FILE="${VAL_FILE:-${VERL_AGENT_DATA_ROOT}/text/test.parquet}"
 export PYTHON_BIN="${PYTHON_BIN:-python3}"
+export WEBSHOP_SHARED_ROOT="${WEBSHOP_SHARED_ROOT:-/data/zhangdw12/work/verl-agent/agent_system/environments/env_package/webshop/webshop}"
+export WEBSHOP_LOCAL_ROOT="${WEBSHOP_LOCAL_ROOT:-${REPO_ROOT}/agent_system/environments/env_package/webshop/webshop}"
 VALIDATION_CONCURRENCY="${VALIDATION_CONCURRENCY:-128}"
 
 cd "${REPO_ROOT}"
@@ -18,6 +20,39 @@ cd "${REPO_ROOT}"
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 TRAINER_MODULE="${TRAINER_MODULE:-verl.trainer.main_sdar}"
+WEBSHOP_RESOURCES=(
+    "data/items_shuffle_1000.json"
+    "data/items_ins_v2_1000.json"
+    "data/items_human_ins.json"
+    "search_engine/indexes"
+)
+
+ensure_webshop_resources() {
+    local resource source_path target_path
+
+    for resource in "${WEBSHOP_RESOURCES[@]}"; do
+        source_path="${WEBSHOP_SHARED_ROOT}/${resource}"
+        target_path="${WEBSHOP_LOCAL_ROOT}/${resource}"
+        if [[ -e "${target_path}" || -L "${target_path}" ]]; then
+            continue
+        fi
+        if [[ ! -e "${source_path}" ]]; then
+            printf 'Missing shared WebShop resource: %s\n' "${source_path}" >&2
+            printf 'Run the WebShop setup first, or set WEBSHOP_SHARED_ROOT to a prepared WebShop root.\n' >&2
+            return 1
+        fi
+    done
+
+    for resource in "${WEBSHOP_RESOURCES[@]}"; do
+        source_path="${WEBSHOP_SHARED_ROOT}/${resource}"
+        target_path="${WEBSHOP_LOCAL_ROOT}/${resource}"
+        if [[ -e "${target_path}" || -L "${target_path}" ]]; then
+            continue
+        fi
+        mkdir -p "$(dirname "${target_path}")"
+        ln -s "${source_path}" "${target_path}"
+    done
+}
 
 DATA_PREP_ARGS=(
     "--mode"
@@ -152,6 +187,8 @@ if [[ "${LAUNCHER_DRY_RUN:-false}" == true ]]; then
     fi
     exit 0
 fi
+
+ensure_webshop_resources
 
 "${PYTHON_BIN}" -m examples.data_preprocess.prepare "${DATA_PREP_ARGS[@]}"
 

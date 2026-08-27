@@ -1,13 +1,19 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).parents[2]
 SIZES = ("1.5b", "3b", "7b")
 ENVIRONMENTS = ("alfworld", "webshop")
+WEBSHOP_RESOURCES = (
+    Path("data/items_shuffle_1000.json"),
+    Path("data/items_ins_v2_1000.json"),
+    Path("data/items_human_ins.json"),
+    Path("search_engine/indexes"),
+)
 
 
 def _launcher(size: str, environment: str) -> Path:
@@ -26,6 +32,46 @@ def _dry_run(launcher: Path, *overrides: str) -> list[str]:
         text=True,
     )
     return completed.stdout.splitlines()
+
+
+def _prepare_webshop_resources(shared_root: Path) -> None:
+    for resource in WEBSHOP_RESOURCES:
+        source = shared_root / resource
+        if resource == Path("search_engine/indexes"):
+            source.mkdir(parents=True)
+        else:
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(resource.name, encoding="utf-8")
+
+
+def _run_webshop_launcher(
+    size: str,
+    repo_root: Path,
+    shared_root: Path,
+    *,
+    dry_run: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    python_bin = shutil.which("true")
+    if python_bin is None:
+        raise RuntimeError("The launcher test requires the standard 'true' command")
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHON_BIN": python_bin,
+            "REPO_ROOT": str(repo_root),
+            "WEBSHOP_SHARED_ROOT": str(shared_root),
+        }
+    )
+    if dry_run:
+        environment["LAUNCHER_DRY_RUN"] = "true"
+    return subprocess.run(
+        [str(_launcher(size, "webshop"))],
+        cwd=REPO_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_examples_surface_is_paper_only():
@@ -131,7 +177,104 @@ def test_webshop_assumes_an_active_environment(size: str):
     assert 'PYTHON_BIN="${PYTHON_BIN:-python3}"' in text
     assert "conda" not in text
     assert "mamba" not in text
-    assert "WEBSHOP_RUNTIME_ROOT" not in text
+    assert (
+        "WEBSHOP_SHARED_ROOT:-/data/zhangdw12/work/verl-agent/"
+        "agent_system/environments/env_package/webshop/webshop"
+    ) in text
+    assert (
+        'WEBSHOP_LOCAL_ROOT="${WEBSHOP_LOCAL_ROOT:-${REPO_ROOT}/'
+        'agent_system/environments/env_package/webshop/webshop}"'
+    ) in text
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_webshop_runtime_links_missing_resources(size: str, tmp_path: Path):
+    repo_root = tmp_path / "clone"
+    shared_root = tmp_path / "shared"
+    repo_root.mkdir()
+    _prepare_webshop_resources(shared_root)
+
+    completed = _run_webshop_launcher(size, repo_root, shared_root)
+
+    assert completed.returncode == 0, completed.stderr
+    local_root = (
+        repo_root
+        / "agent_system/environments/env_package/webshop/webshop"
+    )
+    for resource in WEBSHOP_RESOURCES:
+        target = local_root / resource
+        assert target.is_symlink()
+        assert target.resolve() == (shared_root / resource).resolve()
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_webshop_runtime_linking_is_idempotent(size: str, tmp_path: Path):
+    repo_root = tmp_path / "clone"
+    shared_root = tmp_path / "shared"
+    repo_root.mkdir()
+    _prepare_webshop_resources(shared_root)
+
+    first = _run_webshop_launcher(size, repo_root, shared_root)
+    assert first.returncode == 0, first.stderr
+    local_root = (
+        repo_root
+        / "agent_system/environments/env_package/webshop/webshop"
+    )
+    first_inodes = {
+        resource: (local_root / resource).lstat().st_ino
+        for resource in WEBSHOP_RESOURCES
+    }
+    second = _run_webshop_launcher(size, repo_root, shared_root)
+
+    assert second.returncode == 0, second.stderr
+    assert first_inodes == {
+        resource: (local_root / resource).lstat().st_ino
+        for resource in WEBSHOP_RESOURCES
+    }
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_webshop_runtime_fails_before_linking_when_shared_source_is_missing(
+    size: str,
+    tmp_path: Path,
+):
+    repo_root = tmp_path / "clone"
+    shared_root = tmp_path / "shared"
+    repo_root.mkdir()
+    _prepare_webshop_resources(shared_root)
+    missing_resource = WEBSHOP_RESOURCES[-1]
+    (shared_root / missing_resource).rmdir()
+
+    completed = _run_webshop_launcher(size, repo_root, shared_root)
+
+    assert completed.returncode != 0
+    assert str(shared_root / missing_resource) in completed.stderr
+    assert "Run the WebShop setup first" in completed.stderr
+    local_root = (
+        repo_root
+        / "agent_system/environments/env_package/webshop/webshop"
+    )
+    assert not any((local_root / resource).exists() for resource in WEBSHOP_RESOURCES)
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_webshop_dry_run_does_not_create_runtime_links(size: str, tmp_path: Path):
+    repo_root = tmp_path / "clone"
+    shared_root = tmp_path / "missing-shared"
+    repo_root.mkdir()
+
+    completed = _run_webshop_launcher(
+        size,
+        repo_root,
+        shared_root,
+        dry_run=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert not (
+        repo_root
+        / "agent_system/environments/env_package/webshop/webshop"
+    ).exists()
 
 
 def test_trainer_wiring_consumes_all_canonical_chunks():
