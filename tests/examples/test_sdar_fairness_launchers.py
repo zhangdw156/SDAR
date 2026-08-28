@@ -16,12 +16,12 @@ ROLLOUT_LOGPROB_MICRO_BATCHES = {
     ("7b", "webshop"): "4",
 }
 ACTOR_AND_REF_MICRO_BATCHES = {
-    ("1.5b", "alfworld"): ("64", "64"),
-    ("1.5b", "webshop"): ("16", "32"),
-    ("3b", "alfworld"): ("32", "32"),
-    ("3b", "webshop"): ("8", "16"),
-    ("7b", "alfworld"): ("8", "8"),
-    ("7b", "webshop"): ("8", "8"),
+    ("1.5b", "alfworld"): ("32", "32"),
+    ("1.5b", "webshop"): ("8", "16"),
+    ("3b", "alfworld"): ("16", "16"),
+    ("3b", "webshop"): ("4", "8"),
+    ("7b", "alfworld"): ("4", "4"),
+    ("7b", "webshop"): ("4", "4"),
 }
 
 

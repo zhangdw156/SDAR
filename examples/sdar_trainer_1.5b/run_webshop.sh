@@ -68,7 +68,7 @@ ACTOR_ARGS=(
     "actor_rollout_ref.actor.strategy=fsdp"
     "actor_rollout_ref.actor.ppo_epochs=1"
     "actor_rollout_ref.actor.ppo_mini_batch_size=64"
-    "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16"
+    "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8"
     "actor_rollout_ref.actor.use_dynamic_bsz=False"
     "actor_rollout_ref.actor.shuffle=False"
     "actor_rollout_ref.actor.ulysses_sequence_parallel_size=1"
@@ -98,7 +98,7 @@ ROLLOUT_ARGS=(
 )
 
 REFERENCE_ARGS=(
-    "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32"
+    "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16"
     "actor_rollout_ref.ref.fsdp_config.param_offload=True"
 )
 
