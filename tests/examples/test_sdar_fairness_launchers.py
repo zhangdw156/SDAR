@@ -4,10 +4,25 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).parents[2]
 SIZES = ("1.5b", "3b", "7b")
 ENVIRONMENTS = ("alfworld", "webshop")
+ROLLOUT_LOGPROB_MICRO_BATCHES = {
+    ("1.5b", "alfworld"): "32",
+    ("1.5b", "webshop"): "16",
+    ("3b", "alfworld"): "16",
+    ("3b", "webshop"): "8",
+    ("7b", "alfworld"): "4",
+    ("7b", "webshop"): "4",
+}
+ACTOR_AND_REF_MICRO_BATCHES = {
+    ("1.5b", "alfworld"): ("64", "64"),
+    ("1.5b", "webshop"): ("16", "32"),
+    ("3b", "alfworld"): ("32", "32"),
+    ("3b", "webshop"): ("8", "16"),
+    ("7b", "alfworld"): ("8", "8"),
+    ("7b", "webshop"): ("8", "8"),
+}
 
 
 def _launcher(size: str, environment: str) -> Path:
@@ -98,6 +113,21 @@ def test_launchers_match_fairness_training_contract(
         "trainer.max_critic_ckpt_to_keep=2",
     }
     assert expected.issubset(lines)
+    assert (
+        "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="
+        f"{ROLLOUT_LOGPROB_MICRO_BATCHES[(size, environment)]}"
+    ) in lines
+    actor_micro_batch, ref_micro_batch = ACTOR_AND_REF_MICRO_BATCHES[
+        (size, environment)
+    ]
+    assert (
+        "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="
+        f"{actor_micro_batch}"
+    ) in lines
+    assert (
+        "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="
+        f"{ref_micro_batch}"
+    ) in lines
     assert lines[-1] == "trainer.experiment_name=cli_override"
     assert not any("sparse" in line or "random" in line for line in lines)
 

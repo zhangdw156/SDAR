@@ -11,12 +11,23 @@ benchmark skillbank, `skill_all=false`) through `verl.trainer.main_sdar`. The
 official implementation intrinsically distills every generated turn. No
 sparse or random turn-selection variant is provided.
 
-The common model, optimizer, rollout, reference, batch/group, seed, GPU,
-checkpoint, logging, horizon/history, and validation settings match the
-corresponding `verl-agent` GRPO 1.5B/3B/7B fairness launchers. Fairness mode is
-on by default. Training-time validation exhaustively evaluates ALFWorld's 140
-seen plus 134 unseen tasks and WebShop's 500 evaluation goals in chunks of at
-most 128 environments.
+The common model, optimizer, reference, batch/group, seed, GPU, checkpoint,
+logging, horizon/history, and validation settings match the corresponding
+`verl-agent` GRPO 1.5B/3B/7B fairness launchers. Because official SDAR performs
+an additional actor log-probability forward pass over every generated turn, its
+rollout log-probability micro-batches use a conservative half-size memory
+profile:
+
+| Model | ALFWorld | WebShop |
+| --- | ---: | ---: |
+| 1.5B | 32 | 16 |
+| 3B | 16 | 8 |
+| 7B | 4 | 4 |
+
+Actor PPO and reference-policy micro-batches remain aligned with the matching
+GRPO launchers. Fairness mode is on by default. Training-time validation
+exhaustively evaluates ALFWorld's 140 seen plus 134 unseen tasks and WebShop's
+500 evaluation goals in chunks of at most 128 environments.
 
 ## Rollout performance behavior
 
