@@ -54,8 +54,12 @@ ALFWorld launchers default to:
 
 The shim is added to `LD_PRELOAD` only when it exists. WebShop launchers default
 to `PYTHON_BIN=python3`, do not activate Conda/Mamba, and assume the caller has
-already activated a runnable environment. WebShop data and indexes remain at
-the repository-relative paths used by the bundled environment package.
+already activated a runnable environment. On normal startup, missing WebShop
+data files and `search_engine/indexes` are linked to the prepared sibling
+`../verl-agent` checkout. The links themselves are always relative, so moving
+all five sibling repositories together preserves them. Existing local resources
+are not replaced. `WEBSHOP_SHARED_ROOT` can override the shared checkout when
+needed.
 
 Canonical fairness manifests are downloaded on first use to
 `${VERL_AGENT_FAIRNESS_CACHE:-${HOME}/.cache/verl-agent/fairness}`. Per-benchmark
