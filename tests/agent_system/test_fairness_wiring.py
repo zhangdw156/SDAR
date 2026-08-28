@@ -220,3 +220,157 @@ def test_webshop_lazy_reacquire_continues_training_rng(monkeypatch):
     assert rngs[0] is rngs[1]
     assert draws == [first, second]
     assert first != second
+
+
+def test_webshop_nonfair_pools_are_lazy_phase_exclusive_and_reuse_rng(
+    monkeypatch,
+):
+    events = []
+    rngs = {True: [], False: []}
+    build_counts = {True: 0, False: 0}
+
+    class RawPool:
+        def __init__(self, phase, build_id):
+            self.phase = phase
+            self.build_id = build_id
+
+        def close(self):
+            events.append(f"close:{self.phase}:{self.build_id}")
+
+    class Manager:
+        def __init__(self, raw_pool, _projection, _config):
+            self.raw_pool = raw_pool
+
+        def identity(self):
+            return f"{self.raw_pool.phase}:{self.raw_pool.build_id}"
+
+        def close(self):
+            self.raw_pool.close()
+
+    def builder(*, is_train, rng=None, **_kwargs):
+        phase = "train" if is_train else "val"
+        build_counts[is_train] += 1
+        build_id = build_counts[is_train]
+        rngs[is_train].append(rng)
+        events.append(f"build:{phase}:{build_id}")
+        return RawPool(phase, build_id)
+
+    package = types.ModuleType(
+        "agent_system.environments.env_package.webshop"
+    )
+    setattr(package, "webshop_projection", lambda actions, *_args: actions)
+    setattr(package, "build_webshop_envs", builder)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent_system.environments.env_package.webshop",
+        package,
+    )
+    monkeypatch.setattr(
+        env_manager,
+        "WebshopEnvironmentManager",
+        Manager,
+    )
+
+    config = OmegaConf.create(
+        {
+            "env": {
+                "env_name": "Webshop",
+                "seed": 0,
+                "fairness": False,
+                "rollout": {"n": 8},
+                "resources_per_worker": {"num_cpus": 0.1},
+                "webshop": {"use_small": True, "human_goals": 0},
+            },
+            "data": {"train_batch_size": 16, "val_batch_size": 128},
+            "trainer": {"val_only": False},
+        }
+    )
+
+    train_envs, val_envs = env_manager.make_envs(config)
+    assert events == []
+
+    assert train_envs.identity() == "train:1"
+    assert events == ["build:train:1"]
+
+    assert val_envs.identity() == "val:1"
+    assert events == [
+        "build:train:1",
+        "close:train:1",
+        "build:val:1",
+    ]
+
+    assert train_envs.identity() == "train:2"
+    assert events == [
+        "build:train:1",
+        "close:train:1",
+        "build:val:1",
+        "close:val:1",
+        "build:train:2",
+    ]
+
+    assert val_envs.identity() == "val:2"
+    assert rngs[True][0] is rngs[True][1]
+    assert rngs[False][0] is rngs[False][1]
+
+    train_envs.close()
+    val_envs.close()
+
+
+def test_webshop_nonfair_val_only_skips_training_proxy(monkeypatch):
+    build_phases = []
+
+    class RawPool:
+        def close(self):
+            pass
+
+    class Manager:
+        def __init__(self, raw_pool, _projection, _config):
+            self.raw_pool = raw_pool
+
+        def identity(self):
+            return "validation"
+
+        def close(self):
+            self.raw_pool.close()
+
+    def builder(*, is_train, **_kwargs):
+        build_phases.append("train" if is_train else "validation")
+        return RawPool()
+
+    package = types.ModuleType(
+        "agent_system.environments.env_package.webshop"
+    )
+    setattr(package, "webshop_projection", lambda actions, *_args: actions)
+    setattr(package, "build_webshop_envs", builder)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent_system.environments.env_package.webshop",
+        package,
+    )
+    monkeypatch.setattr(
+        env_manager,
+        "WebshopEnvironmentManager",
+        Manager,
+    )
+
+    config = OmegaConf.create(
+        {
+            "env": {
+                "env_name": "Webshop",
+                "seed": 0,
+                "fairness": False,
+                "rollout": {"n": 8},
+                "resources_per_worker": {"num_cpus": 0.1},
+                "webshop": {"use_small": True, "human_goals": 0},
+            },
+            "data": {"train_batch_size": 16, "val_batch_size": 128},
+            "trainer": {"val_only": True},
+        }
+    )
+
+    train_envs, val_envs = env_manager.make_envs(config)
+    assert train_envs is None
+    assert build_phases == []
+    assert val_envs.identity() == "validation"
+    assert build_phases == ["validation"]
+    val_envs.close()
