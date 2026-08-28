@@ -8,7 +8,7 @@ import torch
 from omegaconf import OmegaConf
 
 from verl import DataProto
-from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
+from agent_system.multi_turn_rollout import adjust_batch
 from verl.trainer.ppo import ray_trainer
 from verl.trainer.ppo import skillsd_ray_trainer
 
@@ -64,6 +64,8 @@ def _config():
                 "test_freq": 0,
                 "save_freq": 0,
                 "rollout_data_dir": None,
+                "n_gpus_per_node": 1,
+                "nnodes": 1,
             },
             "algorithm": {
                 "adv_estimator": "grpo",
@@ -94,11 +96,16 @@ def _config():
                 "actor": {
                     "loss_agg_mode": "token-mean",
                     "use_invalid_action_penalty": False,
+                    "use_kl_loss": False,
+                    "ppo_micro_batch_size_per_gpu": 4,
+                    "ppo_mini_batch_size": 4,
                 },
                 "rollout": {
                     "n": 2,
                     "multi_turn": {"enable": False},
+                    "log_prob_micro_batch_size_per_gpu": 4,
                 },
+                "ref": {"log_prob_micro_batch_size_per_gpu": 4},
             },
             "reward_model": {"launch_reward_fn_async": False},
         }
@@ -204,19 +211,27 @@ def test_step_row_fit_populates_actor_advantages(
             trainer.fit()
 
 
-def test_step_row_runtime_rejects_unconsumed_trajectory_override():
+def test_native_adjust_batch_preserves_legacy_copy_behavior(monkeypatch):
     config = _config()
-    config.algorithm.trajectory_grpo.advantage = "trajectory"
+    batch = DataProto.concat([_rollout_batch(), _rollout_batch().select_idxs([0])])
+    original_traj_uids = batch.non_tensor_batch["traj_uid"].copy()
+    monkeypatch.setattr(np.random, "choice", lambda *_args, **_kwargs: np.asarray([1]))
 
-    with pytest.raises(NotImplementedError, match="canonical step_row"):
-        ray_trainer.compute_step_row_advantage(_rollout_batch(), config)
+    adjusted = adjust_batch(config, batch)
 
-
-def test_rollout_and_batch_adjustment_consume_trajectory_config():
-    config = _config()
-    config.algorithm.trajectory_grpo.scheduler = "invalid"
-
-    with pytest.raises(ValueError, match="trajectory_grpo.scheduler"):
-        TrajectoryCollector(config=config, tokenizer=None)
-    with pytest.raises(ValueError, match="trajectory_grpo.scheduler"):
-        adjust_batch(config, _rollout_batch())
+    assert len(batch) == 3
+    assert len(adjusted) == 4
+    np.testing.assert_array_equal(
+        adjusted.non_tensor_batch["traj_uid"],
+        np.asarray(["traj-0", "traj-1", "traj-0", "traj-1"], dtype=object),
+    )
+    np.testing.assert_array_equal(batch.non_tensor_batch["traj_uid"], original_traj_uids)
+    torch.testing.assert_close(adjusted.batch["input_ids"][-1], batch.batch["input_ids"][1])
+    trajectory_metadata = {
+        "trajectory_id",
+        "trajectory_row_weight",
+        "trajectory_update_id",
+    }
+    assert trajectory_metadata.isdisjoint(adjusted.batch.keys())
+    assert trajectory_metadata.isdisjoint(adjusted.non_tensor_batch)
+    assert trajectory_metadata.isdisjoint(adjusted.meta_info)

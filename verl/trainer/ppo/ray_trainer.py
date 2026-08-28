@@ -52,10 +52,7 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
-from verl.trainer.ppo.trajectory_grpo import (
-    NATIVE_TRAJECTORY_GRPO_CONFIG,
-    validate_trajectory_grpo_config,
-)
+from verl.trainer.ppo.trajectory_grpo import resolve_trajectory_grpo_config
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.metric import (
     reduce_metrics,
@@ -366,42 +363,9 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     return data
 
 
-def resolve_trajectory_grpo_config(config) -> dict:
-    """Resolve and validate the trajectory-GRPO runtime contract."""
-
-    configured_value = config.algorithm.get("trajectory_grpo", {})
-    configured = (
-        OmegaConf.to_container(configured_value, resolve=True)
-        if OmegaConf.is_config(configured_value)
-        else dict(configured_value or {})
-    )
-    trajectory_config = {
-        **NATIVE_TRAJECTORY_GRPO_CONFIG,
-        **configured,
-    }
-    validate_trajectory_grpo_config(trajectory_config)
-    non_native = {
-        key: value
-        for key, value in trajectory_config.items()
-        if value != NATIVE_TRAJECTORY_GRPO_CONFIG[key]
-    }
-    if non_native:
-        raise NotImplementedError(
-            "The ICLR SDAR runtime supports the canonical step_row "
-            f"trajectory_grpo contract only, got {non_native}"
-        )
-    return trajectory_config
-
-
 def compute_step_row_advantage(data: DataProto, config) -> DataProto:
-    """Compute the configured native step-row advantage tensors."""
+    """Compute the native step-row advantage tensors."""
 
-    trajectory_config = resolve_trajectory_grpo_config(config)
-    if trajectory_config["advantage"] != "step_row":
-        raise ValueError(
-            "step-row advantage execution requires "
-            "algorithm.trajectory_grpo.advantage=step_row"
-        )
     return compute_advantage(
         data,
         adv_estimator=config.algorithm.adv_estimator,

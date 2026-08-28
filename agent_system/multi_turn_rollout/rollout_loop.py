@@ -24,12 +24,10 @@ from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
-from omegaconf import OmegaConf
 from transformers import PreTrainedTokenizer
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.trainer.ppo.trajectory_grpo import validate_trajectory_grpo_config
 
 
 logger = logging.getLogger(__name__)
@@ -133,19 +131,6 @@ class TrajectoryCollector:
         self.config = config
         self.tokenizer = tokenizer
         self.processor = processor
-        trajectory_config = config.algorithm.get("trajectory_grpo", {})
-        validate_trajectory_grpo_config(
-            {
-                "trajectory_grpo": (
-                    OmegaConf.to_container(
-                        trajectory_config,
-                        resolve=True,
-                    )
-                    if OmegaConf.is_config(trajectory_config)
-                    else dict(trajectory_config or {})
-                )
-            }
-        )
 
     def preprocess_single_sample(
         self,
